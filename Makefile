@@ -5,8 +5,8 @@ TESTBIN := expr_test
 
 all:
 	@echo make test      - run tests
-	@echo make llvm-cov  - report test coverage using LLVM (set LLVM_VER if needed)
-	@echo make gcov  - report test coverage (set GCC_VER if needed)
+	@echo make llvm-cov  - report test coverage using LLVM "(set LLVM_VER if needed)"
+	@echo make gcov  - report test coverage "(set GCC_VER if needed)"
 
 test: $(TESTBIN)
 	./$(TESTBIN)
@@ -15,6 +15,10 @@ $(TESTBIN): expr_test.o
 	$(CC) $^ $(LDFLAGS) -o $@
 
 expr_test.o: expr_test.c expr.h expr_debug.h
+
+$(TESTBIN): gettimeofday.o
+expr_test.o: gettimeofday.h
+gettimeofday.o: gettimeofday.h
 
 llvm-cov: CC := clang$(LLVM_VER)
 llvm-cov: CFLAGS += -fprofile-instr-generate -fcoverage-mapping

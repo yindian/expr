@@ -12,6 +12,25 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+#include <float.h>
+
+#ifndef NAN
+static unsigned long __nan[2] = {0xffffffff, 0x7fffffff};
+#define NAN (*(double *) __nan)
+#endif
+
+#ifndef INFINITY
+static unsigned long __inf[2] = {0x0, 0x7ff00000};
+#define INFINITY (*(double *) __inf)
+#endif
+
+#define isnan(_x)   _isnan(_x)
+#define isinf(_x)   (!_finite(_x))
+
+#define snprintf _snprintf
+#endif
+
 /*
  * Simple expandable vector implementation
  */
@@ -100,16 +119,16 @@ static int prec[] = {0, 1, 1, 1, 2, 2, 2, 2, 3,  3,  4,  4, 5, 5,
 
 typedef vec(struct expr) vec_expr_t;
 typedef void (*exprfn_cleanup_t)(struct expr_func *f, void *context);
-typedef float (*exprfn_t)(struct expr_func *f, vec_expr_t *args, void *context);
+typedef double (*exprfn_t)(struct expr_func *f, vec_expr_t *args, void *context);
 
 struct expr {
   enum expr_type type;
   union {
     struct {
-      float value;
+      double value;
     } num;
     struct {
-      float *value;
+      double *value;
     } var;
     struct {
       vec_expr_t args;
@@ -122,8 +141,13 @@ struct expr {
   } param;
 };
 
+#ifdef _MSC_VER
+#define expr_init()                                                            \
+  { (enum expr_type)0 }
+#else
 #define expr_init()                                                            \
   { .type = (enum expr_type)0 }
+#endif
 
 struct expr_string {
   const char *s;
@@ -197,7 +221,8 @@ static struct {
 };
 
 static enum expr_type expr_op(const char *s, size_t len, int unary) {
-  for (unsigned int i = 0; i < sizeof(OPS) / sizeof(OPS[0]); i++) {
+  unsigned int i;
+  for (i = 0; i < sizeof(OPS) / sizeof(OPS[0]); i++) {
     if (strlen(OPS[i].s) == len && strncmp(OPS[i].s, s, len) == 0 &&
         (unary == -1 || expr_is_unary(OPS[i].op) == unary)) {
       return OPS[i].op;
@@ -206,11 +231,12 @@ static enum expr_type expr_op(const char *s, size_t len, int unary) {
   return OP_UNKNOWN;
 }
 
-static float expr_parse_number(const char *s, size_t len) {
-  float num = 0;
+static double expr_parse_number(const char *s, size_t len) {
+  double num = 0;
   unsigned int frac = 0;
   unsigned int digits = 0;
-  for (unsigned int i = 0; i < len; i++) {
+  unsigned int i;
+  for (i = 0; i < len; i++) {
     if (s[i] == '.' && frac == 0) {
       frac++;
       continue;
@@ -244,7 +270,8 @@ struct expr_func {
 
 static struct expr_func *expr_func(struct expr_func *funcs, const char *s,
                                    size_t len) {
-  for (struct expr_func *f = funcs; f->name; f++) {
+  struct expr_func *f;
+  for (f = funcs; f->name; f++) {
     if (strlen(f->name) == len && strncmp(f->name, s, len) == 0) {
       return f;
     }
@@ -256,7 +283,7 @@ static struct expr_func *expr_func(struct expr_func *funcs, const char *s,
  * Variables
  */
 struct expr_var {
-  float value;
+  double value;
   struct expr_var *next;
   char name[];
 };
@@ -288,7 +315,7 @@ static struct expr_var *expr_var(struct expr_var_list *vars, const char *s,
   return v;
 }
 
-static int to_int(float x) {
+static int to_int(double x) {
   if (isnan(x)) {
     return 0;
   } else if (isinf(x) != 0) {
@@ -298,8 +325,8 @@ static int to_int(float x) {
   }
 }
 
-static float expr_eval(struct expr *e) {
-  float n;
+static double expr_eval(struct expr *e) {
+  double n;
   switch (e->type) {
   case OP_UNARY_MINUS:
     return -(expr_eval(&e->param.op.args.buf[0]));
@@ -308,7 +335,7 @@ static float expr_eval(struct expr *e) {
   case OP_UNARY_BITWISE_NOT:
     return ~(to_int(expr_eval(&e->param.op.args.buf[0])));
   case OP_POWER:
-    return powf(expr_eval(&e->param.op.args.buf[0]),
+    return pow(expr_eval(&e->param.op.args.buf[0]),
                 expr_eval(&e->param.op.args.buf[1]));
   case OP_MULTIPLY:
     return expr_eval(&e->param.op.args.buf[0]) *
@@ -317,7 +344,7 @@ static float expr_eval(struct expr *e) {
     return expr_eval(&e->param.op.args.buf[0]) /
            expr_eval(&e->param.op.args.buf[1]);
   case OP_REMAINDER:
-    return fmodf(expr_eval(&e->param.op.args.buf[0]),
+    return fmod(expr_eval(&e->param.op.args.buf[0]),
                  expr_eval(&e->param.op.args.buf[1]));
   case OP_PLUS:
     return expr_eval(&e->param.op.args.buf[0]) +
@@ -411,10 +438,11 @@ static float expr_eval(struct expr *e) {
 
 static int expr_next_token(const char *s, size_t len, int *flags) {
   unsigned int i = 0;
+  char c;
   if (len == 0) {
     return 0;
   }
-  char c = s[0];
+  c = s[0];
   if (c == '#') {
     for (; i < len && s[i] != '\n'; i++)
       ;
@@ -505,15 +533,18 @@ static int expr_bind(const char *s, size_t len, vec_expr_t *es) {
     if (vec_len(es) < 1) {
       return -1;
     }
+    {
     struct expr arg = vec_pop(es);
     struct expr unary = expr_init();
     unary.type = op;
     vec_push(&unary.param.op.args, arg);
     vec_push(es, unary);
+    }
   } else {
     if (vec_len(es) < 2) {
       return -1;
     }
+    {
     struct expr b = vec_pop(es);
     struct expr a = vec_pop(es);
     struct expr binary = expr_init();
@@ -524,11 +555,12 @@ static int expr_bind(const char *s, size_t len, vec_expr_t *es) {
     vec_push(&binary.param.op.args, a);
     vec_push(&binary.param.op.args, b);
     vec_push(es, binary);
+    }
   }
   return 0;
 }
 
-static struct expr expr_const(float value) {
+static struct expr expr_const(double value) {
   struct expr e = expr_init();
   e.type = OP_CONST;
   e.param.num.value = value;
@@ -551,7 +583,13 @@ static struct expr expr_binary(enum expr_type type, struct expr a,
   return e;
 }
 
+#ifdef _MSC_VER
+#define inline __inline
+#endif
 static inline void expr_copy(struct expr *dst, struct expr *src) {
+#ifdef _MSC_VER
+#undef inline
+#endif
   int i;
   struct expr arg;
   dst->type = src->type;
@@ -583,7 +621,7 @@ static void expr_destroy_args(struct expr *e);
 static struct expr *expr_create(const char *s, size_t len,
                                 struct expr_var_list *vars,
                                 struct expr_func *funcs) {
-  float num;
+  double num;
   struct expr_var *v;
   const char *id = NULL;
   size_t idn = 0;
@@ -604,12 +642,14 @@ static struct expr *expr_create(const char *s, size_t len,
   int paren = EXPR_PAREN_ALLOWED;
   for (;;) {
     int n = expr_next_token(s, len, &flags);
+    const char *tok;
+    int paren_next;
     if (n == 0) {
       break;
     } else if (n < 0) {
       goto cleanup;
     }
-    const char *tok = s;
+    tok = s;
     s = s + n;
     len = len - n;
     if (*tok == '#') {
@@ -641,7 +681,7 @@ static struct expr *expr_create(const char *s, size_t len,
     if (isspace(*tok)) {
       continue;
     }
-    int paren_next = EXPR_PAREN_ALLOWED;
+    paren_next = EXPR_PAREN_ALLOWED;
 
     if (idn > 0) {
       if (n == 1 && *tok == '(') {
@@ -674,8 +714,10 @@ static struct expr *expr_create(const char *s, size_t len,
       if (paren == EXPR_PAREN_EXPECTED) {
         struct expr_string str = {"{", 1};
         vec_push(&os, str);
+        {
         struct expr_arg arg = {vec_len(&os), vec_len(&es), vec_init()};
         vec_push(&as, arg);
+        }
       } else if (paren == EXPR_PAREN_ALLOWED) {
         struct expr_string str = {"(", 1};
         vec_push(&os, str);
@@ -696,26 +738,34 @@ static struct expr *expr_create(const char *s, size_t len,
       if (vec_len(&os) == 0) {
         goto cleanup; // Bad parens
       }
+      {
       struct expr_string str = vec_pop(&os);
       if (str.n == 1 && *str.s == '{') {
-        str = vec_pop(&os);
         struct expr_arg arg = vec_pop(&as);
+        str = vec_pop(&os);
         if (vec_len(&es) > arg.eslen) {
           vec_push(&arg.args, vec_pop(&es));
         }
         if (str.n == 1 && str.s[0] == '$') {
+          struct expr *u;
+          struct expr_var *v;
           if (vec_len(&arg.args) < 1) {
             vec_free(&arg.args);
             goto cleanup; /* too few arguments for $() function */
           }
-          struct expr *u = &vec_nth(&arg.args, 0);
+          u = &vec_nth(&arg.args, 0);
           if (u->type != OP_VAR) {
             vec_free(&arg.args);
             goto cleanup; /* first argument is not a variable */
           }
-          for (struct expr_var *v = vars->head; v; v = v->next) {
+          for (v = vars->head; v; v = v->next) {
             if (&v->value == u->param.var.value) {
+#ifdef _MSC_VER
+              struct macro m = {v->name};
+              m.body = arg.args;
+#else
               struct macro m = {v->name, arg.args};
+#endif
               vec_push(&macros, m);
               break;
             }
@@ -732,22 +782,25 @@ static struct expr *expr_create(const char *s, size_t len,
             }
           }
           if (found != -1) {
-            m = vec_nth(&macros, found);
             struct expr root = expr_const(0);
             struct expr *p = &root;
+            int j;
+            m = vec_nth(&macros, found);
             /* Assign macro parameters */
-            for (int j = 0; j < vec_len(&arg.args); j++) {
+            for (j = 0; j < vec_len(&arg.args); j++) {
               char varname[4];
               snprintf(varname, sizeof(varname) - 1, "$%d", (j + 1));
+              {
               struct expr_var *v = expr_var(vars, varname, strlen(varname));
               struct expr ev = expr_varref(v);
               struct expr assign =
                   expr_binary(OP_ASSIGN, ev, vec_nth(&arg.args, j));
               *p = expr_binary(OP_COMMA, assign, expr_const(0));
+              }
               p = &vec_nth(&p->param.op.args, 1);
             }
             /* Expand macro body */
-            for (int j = 1; j < vec_len(&m.body); j++) {
+            for (j = 1; j < vec_len(&m.body); j++) {
               if (j < vec_len(&m.body) - 1) {
                 *p = expr_binary(OP_COMMA, expr_const(0), expr_const(0));
                 expr_copy(&vec_nth(&p->param.op.args, 0), &vec_nth(&m.body, j));
@@ -775,6 +828,7 @@ static struct expr *expr_create(const char *s, size_t len,
           }
         }
       }
+      }
       paren_next = EXPR_PAREN_FORBIDDEN;
     } else if (!isnan(num = expr_parse_number(tok, n))) {
       vec_push(&es, expr_const(num));
@@ -786,6 +840,7 @@ static struct expr *expr_create(const char *s, size_t len,
         o2 = vec_peek(&os);
       }
       for (;;) {
+        enum expr_type type2;
         if (n == 1 && *tok == ',' && vec_len(&os) > 0) {
           struct expr_string str = vec_peek(&os);
           if (str.n == 1 && *str.s == '{') {
@@ -794,7 +849,7 @@ static struct expr *expr_create(const char *s, size_t len,
             break;
           }
         }
-        enum expr_type type2 = expr_op(o2.s, o2.n, -1);
+        type2 = expr_op(o2.s, o2.n, -1);
         if (!(type2 != OP_UNKNOWN && expr_prec(op, type2))) {
           struct expr_string str = {tok, n};
           vec_push(&os, str);
@@ -846,11 +901,12 @@ static struct expr *expr_create(const char *s, size_t len,
     }
   }
 
+cleanup:
+  {
   int i, j;
   struct macro m;
   struct expr e;
   struct expr_arg a;
-cleanup:
   vec_foreach(&macros, m, i) {
     struct expr e;
     vec_foreach(&m.body, e, j) { expr_destroy_args(&e); }
@@ -864,6 +920,7 @@ cleanup:
   vec_foreach(&as, a, i) {
     vec_foreach(&a.args, e, j) { expr_destroy_args(&e); }
     vec_free(&a.args);
+  }
   }
   vec_free(&as);
 
@@ -896,7 +953,8 @@ static void expr_destroy(struct expr *e, struct expr_var_list *vars) {
     free(e);
   }
   if (vars != NULL) {
-    for (struct expr_var *v = vars->head; v;) {
+    struct expr_var *v;
+    for (v = vars->head; v;) {
       struct expr_var *next = v->next;
       free(v);
       v = next;
